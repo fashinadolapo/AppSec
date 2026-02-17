@@ -1,0 +1,11 @@
+body { font-family: Inter, Arial, sans-serif; margin: 0; background: #0b1220; color: #e5e7eb; }
+.container { max-width: 1280px; margin: 0 auto; padding: 2rem; }
+.card { background: #111827; border: 1px solid #374151; border-radius: 12px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
+h1 { margin-top: 0; }
+table { width: 100%; border-collapse: collapse; background: #111827; border-radius: 12px; overflow: hidden; }
+th, td { text-align: left; padding: 0.8rem; border-bottom: 1px solid #1f2937; font-size: 0.9rem; vertical-align: top; }
+.badge { padding: 0.2rem 0.5rem; border-radius: 999px; font-weight: 700; text-transform: uppercase; font-size: 0.75rem; }
+.badge.error, .badge.high, .badge.critical { background:#7f1d1d; color:#fecaca; }
+.badge.warning, .badge.medium { background:#78350f; color:#fde68a; }
+.badge.note, .badge.low, .badge.info { background:#1e3a8a; color:#bfdbfe; }
+ul { margin: 0.5rem 0 0; padding-left: 1.2rem; }

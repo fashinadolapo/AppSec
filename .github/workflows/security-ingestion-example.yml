@@ -1,0 +1,22 @@
+name: security-ingestion-example
+
+on:
+  workflow_dispatch:
+
+jobs:
+  scan-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Semgrep SARIF
+        run: |
+          echo '{"runs":[]}' > semgrep.sarif
+
+      - name: Send report to dashboard backend
+        env:
+          APPSEC_DASHBOARD_URL: ${{ secrets.APPSEC_DASHBOARD_URL }}
+        run: |
+          curl -sS -X POST \
+            -F "file=@semgrep.sarif" \
+            "$APPSEC_DASHBOARD_URL/api/ingest/semgrep"
