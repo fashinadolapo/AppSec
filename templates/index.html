@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AppSec Fusion Dashboard</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="container">
+    <h1>AppSec Fusion Dashboard</h1>
+    <div class="card" id="summary">Loading summary...</div>
+    <div class="card" id="ai-insights">Loading AI remediation insights...</div>
+    <table>
+      <thead>
+        <tr>
+          <th>Scanner</th><th>Severity</th><th>Title</th><th>Path</th><th>Line</th><th>Recommendation</th><th>Source</th>
+        </tr>
+      </thead>
+      <tbody id="findings-body"></tbody>
+    </table>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
