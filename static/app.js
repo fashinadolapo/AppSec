@@ -1,21 +1,10 @@
 const summaryEl = document.getElementById('summary');
 const tableEl = document.getElementById('findings-body');
 const aiInsightsEl = document.getElementById('ai-insights');
-const meEl = document.getElementById('me');
 
 function severityBadge(sev) {
   const normalized = (sev || 'unknown').toLowerCase();
   return `<span class="badge ${normalized}">${normalized}</span>`;
-}
-
-async function refreshMe() {
-  const res = await fetch('/api/me');
-  if (res.status !== 200) {
-    meEl.innerHTML = '<a href="/auth/login">Login</a>';
-    return;
-  }
-  const data = await res.json();
-  meEl.innerHTML = `<strong>User:</strong> ${data.email || data.subject} <br/><strong>Roles:</strong> ${(data.roles || []).join(', ') || 'none'} <br/><a href="/auth/logout">Logout</a>`;
 }
 
 async function refreshInsights() {
@@ -70,5 +59,4 @@ const wsProto = window.location.protocol === 'https:' ? 'wss' : 'ws';
 const ws = new WebSocket(`${wsProto}://${window.location.host}/ws`);
 ws.onmessage = () => refresh();
 
-refreshMe();
 refresh();
