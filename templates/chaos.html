@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chaos Engineering | AppSec Fusion</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="container">
+    <h1>Chaos Engineering Controls</h1>
+    <div class="card" id="chaos-user"><strong>User:</strong> __USER_EMAIL__</div>
+    <div class="card">
+      <label><input type="checkbox" id="enabled" /> Enable chaos mode</label>
+      <div>
+        <label>Latency (ms): <input id="latency" type="number" min="0" max="10000" value="0" /></label>
+      </div>
+      <div>
+        <label>Error injection (%): <input id="error" type="number" min="0" max="100" value="0" /></label>
+      </div>
+      <button id="save">Save chaos config</button>
+      <p id="status"></p>
+    </div>
+    <div class="card">
+      <a href="/">Back to Dashboard</a>
+    </div>
+  </div>
+  <script src="/static/chaos.js"></script>
+</body>
+</html>
