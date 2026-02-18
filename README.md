@@ -28,7 +28,7 @@ Defaults can be changed with env vars: `VIEWER_ROLE`, `INGESTOR_ROLE`, `ADMIN_RO
 - `GET /` dashboard UI (viewer)
 - `GET /api/me` identity + roles (viewer)
 - `GET /api/findings?limit=100&offset=0` (viewer)
-- `POST /api/ingest/{scanner}` (ingestor or API key)
+- `POST /api/ingest/{scanner}` (ingestor or API key; scanner-aware connectors)
 - `POST /api/mcp/ingest` (ingestor or API key)
 - `GET /api/ai/insights` (viewer)
 - `DELETE /api/admin/findings` (admin)
@@ -124,3 +124,17 @@ For **production** environment:
 - `PRODUCTION_DEPLOY_WEBHOOK`
 
 Tip: use GitHub Environment protection rules (required reviewers) on `production` for manual approval gates.
+
+
+## Scanner connector pack
+
+The ingestion route now includes scanner-aware normalization for:
+
+- `semgrep` JSON (`results`)
+- `trivy` JSON (`Results` -> vulnerabilities/misconfigurations)
+- `checkov` JSON (`results.failed_checks`)
+- `zap` JSON (`site[].alerts[]`)
+- `nuclei` JSON list (`template-id`, `info`)
+- SARIF (`runs`) for tools like CodeQL/Semgrep SARIF
+
+For unknown formats, the service falls back to generic JSON mapping (`findings`/list/results).

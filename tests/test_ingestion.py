@@ -108,3 +108,118 @@ def test_chaos_admin_api(tmp_path: Path):
     )
     # in disabled auth mode csrf is bypassed by design for local/dev, so this remains 200
     assert no_csrf.status_code == 200
+
+
+def test_scanner_connector_pack_parsing(tmp_path: Path):
+    _, client = load_app(tmp_path / "connectors.db")
+
+    semgrep_report = {
+        "results": [
+            {
+                "check_id": "python.lang.security.audit.eval",
+                "path": "app/service.py",
+                "start": {"line": 12},
+                "extra": {"severity": "ERROR", "message": "Avoid eval", "metadata": {"fix": "Use safe parser"}},
+            }
+        ]
+    }
+    r1 = client.post(
+        "/api/ingest/semgrep",
+        files={"file": ("semgrep.json", json.dumps(semgrep_report), "application/json")},
+        headers={"x-api-key": "test-key"},
+    )
+    assert r1.status_code == 200
+    assert r1.json()["ingested"] == 1
+
+    trivy_report = {
+        "Results": [
+            {
+                "Target": "alpine:3.18",
+                "Vulnerabilities": [
+                    {
+                        "VulnerabilityID": "CVE-2024-0001",
+                        "Severity": "HIGH",
+                        "Title": "openssl issue",
+                        "Description": "A vuln",
+                        "PrimaryURL": "https://example.test/cve",
+                    }
+                ],
+            }
+        ]
+    }
+    r2 = client.post(
+        "/api/ingest/trivy",
+        files={"file": ("trivy.json", json.dumps(trivy_report), "application/json")},
+        headers={"x-api-key": "test-key"},
+    )
+    assert r2.status_code == 200
+    assert r2.json()["ingested"] == 1
+
+    checkov_report = {
+        "results": {
+            "failed_checks": [
+                {
+                    "check_id": "CKV_AWS_20",
+                    "check_name": "S3 Bucket has an ACL defined which allows public READ access",
+                    "severity": "MEDIUM",
+                    "guideline": "Restrict S3 ACL",
+                    "file_path": "/terraform/main.tf",
+                    "file_line_range": [14, 21],
+                }
+            ]
+        }
+    }
+    r3 = client.post(
+        "/api/ingest/checkov",
+        files={"file": ("checkov.json", json.dumps(checkov_report), "application/json")},
+        headers={"x-api-key": "test-key"},
+    )
+    assert r3.status_code == 200
+    assert r3.json()["ingested"] == 1
+
+    zap_report = {
+        "site": [
+            {
+                "@name": "https://app.example.com",
+                "alerts": [
+                    {
+                        "pluginid": "40012",
+                        "name": "Cross Site Scripting (Reflected)",
+                        "riskdesc": "High (High)",
+                        "desc": "XSS found",
+                        "solution": "Encode output",
+                    }
+                ],
+            }
+        ]
+    }
+    r4 = client.post(
+        "/api/ingest/zap",
+        files={"file": ("zap.json", json.dumps(zap_report), "application/json")},
+        headers={"x-api-key": "test-key"},
+    )
+    assert r4.status_code == 200
+    assert r4.json()["ingested"] == 1
+
+    nuclei_report = [
+        {
+            "template-id": "http-missing-security-headers",
+            "host": "https://app.example.com",
+            "matched-at": "https://app.example.com",
+            "info": {"name": "Missing Security Headers", "severity": "low", "reference": ["https://owasp.org"]},
+        }
+    ]
+    r5 = client.post(
+        "/api/ingest/nuclei",
+        files={"file": ("nuclei.json", json.dumps(nuclei_report), "application/json")},
+        headers={"x-api-key": "test-key"},
+    )
+    assert r5.status_code == 200
+    assert r5.json()["ingested"] == 1
+
+    findings = client.get("/api/findings?limit=30&offset=0").json()
+    assert findings["summary"]["by_scanner"]["semgrep"] == 1
+    assert findings["summary"]["by_scanner"]["trivy"] == 1
+    assert findings["summary"]["by_scanner"]["checkov"] == 1
+    assert findings["summary"]["by_scanner"]["zap"] == 1
+    assert findings["summary"]["by_scanner"]["nuclei"] == 1

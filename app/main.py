@@ -396,6 +396,129 @@ def parse_generic_findings(report: list[dict[str, Any]], scanner: str, source: s
     ]
 
 
+
+
+def parse_semgrep_json(report: dict[str, Any], scanner: str = "semgrep") -> list[Finding]:
+    findings: list[Finding] = []
+    for result in report.get("results", []):
+        extra = result.get("extra", {})
+        findings.append(
+            Finding(
+                scanner=scanner,
+                severity=str(extra.get("severity", "medium")).lower(),
+                rule_id=result.get("check_id", "unknown"),
+                title=result.get("check_id", "Semgrep finding"),
+                description=extra.get("message", ""),
+                recommendation=extra.get("metadata", {}).get("fix", ""),
+                file_path=result.get("path", ""),
+                line=(result.get("start") or {}).get("line"),
+                raw=result,
+            )
+        )
+    return findings
+
+
+def parse_trivy_json(report: dict[str, Any], scanner: str = "trivy") -> list[Finding]:
+    findings: list[Finding] = []
+    for result in report.get("Results", []):
+        target = result.get("Target", "")
+        vulns = result.get("Vulnerabilities", []) or result.get("Misconfigurations", [])
+        for vuln in vulns:
+            findings.append(
+                Finding(
+                    scanner=scanner,
+                    severity=str(vuln.get("Severity", vuln.get("severity", "medium"))).lower(),
+                    rule_id=vuln.get("VulnerabilityID", vuln.get("ID", "unknown")),
+                    title=vuln.get("Title", vuln.get("Message", "Trivy finding")),
+                    description=vuln.get("Description", ""),
+                    recommendation=vuln.get("PrimaryURL", vuln.get("Resolution", "")),
+                    file_path=target,
+                    raw=vuln,
+                )
+            )
+    return findings
+
+
+def parse_checkov_json(report: dict[str, Any], scanner: str = "checkov") -> list[Finding]:
+    failed = ((report.get("results") or {}).get("failed_checks")) or report.get("failed_checks") or []
+    findings: list[Finding] = []
+    for check in failed:
+        findings.append(
+            Finding(
+                scanner=scanner,
+                severity=str(check.get("severity", "medium")).lower(),
+                rule_id=check.get("check_id", "unknown"),
+                title=check.get("check_name", "Checkov finding"),
+                description=check.get("guideline", ""),
+                recommendation=check.get("guideline", ""),
+                file_path=check.get("file_path", ""),
+                line=check.get("file_line_range", [None])[0] if isinstance(check.get("file_line_range"), list) else None,
+                raw=check,
+            )
+        )
+    return findings
+
+
+def parse_zap_json(report: dict[str, Any], scanner: str = "zap") -> list[Finding]:
+    findings: list[Finding] = []
+    for site in (report.get("site") or []):
+        for alert in site.get("alerts", []):
+            findings.append(
+                Finding(
+                    scanner=scanner,
+                    severity=str(alert.get("riskdesc", "medium")).split(" ")[0].lower(),
+                    rule_id=alert.get("pluginid", "unknown"),
+                    title=alert.get("name", "ZAP alert"),
+                    description=alert.get("desc", ""),
+                    recommendation=alert.get("solution", ""),
+                    file_path=site.get("@name", ""),
+                    raw=alert,
+                )
+            )
+    return findings
+
+
+def parse_nuclei_json(report: list[dict[str, Any]], scanner: str = "nuclei") -> list[Finding]:
+    findings: list[Finding] = []
+    for item in report:
+        info = item.get("info", {})
+        findings.append(
+            Finding(
+                scanner=scanner,
+                severity=str(info.get("severity", "medium")).lower(),
+                rule_id=item.get("template-id", "unknown"),
+                title=info.get("name", "Nuclei finding"),
+                description=item.get("matched-at", ""),
+                recommendation=info.get("reference", [""])[0] if isinstance(info.get("reference"), list) and info.get("reference") else "",
+                file_path=item.get("host", ""),
+                raw=item,
+            )
+        )
+    return findings
+
+
+def detect_and_parse_report(report: Any, scanner: str) -> list[Finding]:
+    normalized = scanner.lower()
+    if isinstance(report, dict) and "runs" in report:
+        return parse_sarif_report(report, normalized)
+    if normalized == "semgrep" and isinstance(report, dict) and isinstance(report.get("results"), list):
+        return parse_semgrep_json(report, normalized)
+    if normalized == "trivy" and isinstance(report, dict) and isinstance(report.get("Results"), list):
+        return parse_trivy_json(report, normalized)
+    if normalized == "checkov" and isinstance(report, dict) and ((report.get("results") or {}).get("failed_checks") or report.get("failed_checks")):
+        return parse_checkov_json(report, normalized)
+    if normalized == "zap" and isinstance(report, dict) and isinstance(report.get("site"), list):
+        return parse_zap_json(report, normalized)
+    if normalized == "nuclei" and isinstance(report, list) and report and isinstance(report[0], dict) and "template-id" in report[0]:
+        return parse_nuclei_json(report, normalized)
+    if isinstance(report, list):
+        return parse_generic_findings(report, normalized)
+    if isinstance(report, dict) and isinstance(report.get("findings"), list):
+        return parse_generic_findings(report["findings"], normalized)
+    if isinstance(report, dict) and isinstance(report.get("results"), list):
+        return parse_generic_findings(report["results"], normalized)
+    raise HTTPException(status_code=400, detail="Unsupported report format")
+
 def summary_from_db(db: Session) -> dict[str, Any]:
     rows = db.execute(select(FindingRecord.severity, FindingRecord.scanner)).all()
     by_severity: dict[str, int] = {}
@@ -567,14 +690,7 @@ async def ingest_report(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     report = json.loads(await file.read())
-    if isinstance(report, dict) and "runs" in report:
-        findings = parse_sarif_report(report, scanner)
-    elif isinstance(report, list):
-        findings = parse_generic_findings(report, scanner)
-    elif isinstance(report, dict) and isinstance(report.get("findings"), list):
-        findings = parse_generic_findings(report["findings"], scanner)
-    else:
-        raise HTTPException(status_code=400, detail="Unsupported report format")
+    findings = detect_and_parse_report(report, scanner)
     ingested = await ingest_findings(db, findings)
     audit("ingest_report", request, scanner=scanner, ingested=ingested, actor=auth.subject)
     return {"scanner": scanner, "ingested": ingested, "summary": summary_from_db(db)}
