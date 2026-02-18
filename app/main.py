@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
+import secrets
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import JSON, DateTime, Integer, String, create_engine, func, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 
@@ -26,6 +30,7 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 AUTH_MODE = os.getenv("AUTH_MODE", "disabled").lower()
 SESSION_SECRET_KEY = os.getenv("SESSION_SECRET_KEY", "change-me-in-production")
+SESSION_HTTPS_ONLY = os.getenv("SESSION_HTTPS_ONLY", "true").lower() == "true"
 OIDC_DISCOVERY_URL = os.getenv("OIDC_DISCOVERY_URL", "")
 OIDC_CLIENT_ID = os.getenv("OIDC_CLIENT_ID", "")
 OIDC_CLIENT_SECRET = os.getenv("OIDC_CLIENT_SECRET", "")
@@ -34,6 +39,12 @@ ROLE_CLAIM = os.getenv("ROLE_CLAIM", "roles")
 VIEWER_ROLE = os.getenv("VIEWER_ROLE", "viewer")
 INGESTOR_ROLE = os.getenv("INGESTOR_ROLE", "ingestor")
 ADMIN_ROLE = os.getenv("ADMIN_ROLE", "admin")
+
+INGEST_RATE_LIMIT_PER_MIN = int(os.getenv("INGEST_RATE_LIMIT_PER_MIN", "60"))
+INGEST_MAX_BODY_BYTES = int(os.getenv("INGEST_MAX_BODY_BYTES", str(10 * 1024 * 1024)))
+
+logger = logging.getLogger("appsec.audit")
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
 
 def _sqlite_connect_args(url: str) -> dict[str, Any]:
@@ -100,6 +111,18 @@ class AuthContext(BaseModel):
     roles: set[str] = Field(default_factory=set)
 
 
+class ChaosConfig(BaseModel):
+    enabled: bool = False
+    latency_ms: int = 0
+    error_percent: int = 0
+
+
+class ChaosUpdate(BaseModel):
+    enabled: bool = False
+    latency_ms: int = Field(default=0, ge=0, le=10000)
+    error_percent: int = Field(default=0, ge=0, le=100)
+
+
 class ConnectionManager:
     def __init__(self) -> None:
         self.active: list[WebSocket] = []
@@ -123,8 +146,27 @@ class ConnectionManager:
             self.disconnect(ws)
 
 
+class RateLimiter:
+    def __init__(self, limit_per_min: int) -> None:
+        self.limit = limit_per_min
+        self.buckets: dict[str, list[float]] = {}
+
+    def allow(self, key: str) -> bool:
+        now = time.time()
+        window_start = now - 60
+        entries = [t for t in self.buckets.get(key, []) if t >= window_start]
+        if len(entries) >= self.limit:
+            self.buckets[key] = entries
+            return False
+        entries.append(now)
+        self.buckets[key] = entries
+        return True
+
+
 ws_manager = ConnectionManager()
-app = FastAPI(title="AppSec Fusion Dashboard", version="1.1.0")
+chaos = ChaosConfig()
+rate_limiter = RateLimiter(INGEST_RATE_LIMIT_PER_MIN)
+app = FastAPI(title="AppSec Fusion Dashboard", version="1.2.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[origin.strip() for origin in os.getenv("CORS_ALLOW_ORIGINS", "*").split(",")],
@@ -132,7 +174,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 if AUTH_MODE == "oidc":
-    app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET_KEY, same_site="lax", https_only=False)
+    app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET_KEY, same_site="lax", https_only=SESSION_HTTPS_ONLY)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
@@ -148,6 +190,54 @@ if AUTH_MODE == "oidc" and OIDC_DISCOVERY_URL and OIDC_CLIENT_ID and OIDC_CLIENT
 
 
 SEVERITY_RANK = {"critical": 4, "error": 4, "high": 3, "warning": 2, "medium": 2, "note": 1, "low": 1, "info": 1}
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+        if request.url.scheme == "https":
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        return response
+
+
+class IngestProtectionMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path.startswith("/api/ingest") or request.url.path.startswith("/api/mcp/ingest"):
+            ip = request.client.host if request.client else "unknown"
+            if not rate_limiter.allow(f"{ip}:{request.url.path}"):
+                return HTMLResponse(status_code=429, content="Too many requests")
+
+            cl = request.headers.get("content-length")
+            if cl and int(cl) > INGEST_MAX_BODY_BYTES:
+                return HTMLResponse(status_code=413, content="Payload too large")
+
+        if chaos.enabled and request.url.path.startswith("/api/") and not request.url.path.startswith("/api/admin/chaos"):
+            if chaos.latency_ms > 0:
+                await __import__("asyncio").sleep(chaos.latency_ms / 1000)
+            if chaos.error_percent > 0:
+                if secrets.randbelow(100) < chaos.error_percent:
+                    return HTMLResponse(status_code=503, content="Chaos mode injected error")
+
+        return await call_next(request)
+
+
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(IngestProtectionMiddleware)
+
+
+def audit(event: str, request: Request | None = None, **fields: Any) -> None:
+    payload = {
+        "event": event,
+        "path": request.url.path if request else None,
+        "method": request.method if request else None,
+        "client": request.client.host if request and request.client else None,
+        **fields,
+    }
+    logger.info("audit %s", json.dumps(payload, default=str))
 
 
 def extract_roles(claims: dict[str, Any]) -> set[str]:
@@ -200,15 +290,35 @@ def require_role(role: str):
     return checker
 
 
-def require_ingestor_access(x_api_key: str | None = Header(default=None), auth: AuthContext | None = Depends(optional_auth)) -> AuthContext:
+def _csrf_token(request: Request) -> str:
+    if AUTH_MODE != "oidc":
+        return "disabled"
+    token = request.session.get("csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        request.session["csrf_token"] = token
+    return token
+
+
+def validate_csrf(request: Request, x_csrf_token: str | None = Header(default=None)) -> None:
+    if AUTH_MODE != "oidc":
+        return
+    expected = request.session.get("csrf_token") if hasattr(request, "session") else None
+    if not expected or x_csrf_token != expected:
+        raise HTTPException(status_code=403, detail="CSRF token missing or invalid")
+
+
+def require_ingestor_access(request: Request, x_api_key: str | None = Header(default=None), auth: AuthContext | None = Depends(optional_auth)) -> AuthContext:
     if INGEST_API_KEY:
         if x_api_key == INGEST_API_KEY:
             return auth or AuthContext(subject="api-key", roles={INGESTOR_ROLE})
         if AUTH_MODE == "oidc" and auth and INGESTOR_ROLE in auth.roles:
+            validate_csrf(request)
             return auth
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Ingestor role or valid API key required")
 
     if auth and INGESTOR_ROLE in auth.roles:
+        validate_csrf(request)
         return auth
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Ingestor role or valid API key required")
 
@@ -333,17 +443,7 @@ async def ingest_findings(db: Session, findings: list[Finding]) -> int:
 
 def build_local_ai_insights(findings: list[Finding], summary: dict[str, Any]) -> dict[str, Any]:
     prioritized = sorted(findings, key=lambda f: (SEVERITY_RANK.get(f.severity, 0), f.detected_at.timestamp()), reverse=True)[:5]
-    actions = [
-        {
-            "finding_id": f.id,
-            "priority": f.severity,
-            "title": f.title,
-            "scanner": f.scanner,
-            "recommendation": f.recommendation or "Triage, patch, and re-scan in CI.",
-            "path": f.file_path,
-        }
-        for f in prioritized
-    ]
+    actions = [{"finding_id": f.id, "priority": f.severity, "title": f.title, "scanner": f.scanner, "recommendation": f.recommendation or "Triage, patch, and re-scan in CI.", "path": f.file_path} for f in prioritized]
     narrative = (
         f"Detected {summary['total']} findings. Focus on {summary['by_severity'].get('critical', 0) + summary['by_severity'].get('error', 0)} critical/error "
         f"and {summary['by_severity'].get('high', 0)} high findings first."
@@ -357,12 +457,7 @@ async def build_openai_ai_insights(findings: list[Finding], summary: dict[str, A
         return build_local_ai_insights(findings, summary)
 
     compact = [{"severity": f.severity, "title": f.title, "scanner": f.scanner, "file_path": f.file_path, "recommendation": f.recommendation} for f in findings[:100]]
-    payload = {
-        "task": "Generate concise AppSec remediation guidance as JSON",
-        "requirements": ["Return JSON keys: narrative, actions", "Prioritize critical/high first"],
-        "summary": summary,
-        "findings": compact,
-    }
+    payload = {"task": "Generate concise AppSec remediation guidance as JSON", "requirements": ["Return JSON keys: narrative, actions", "Prioritize critical/high first"], "summary": summary, "findings": compact}
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(
             "https://api.openai.com/v1/chat/completions",
@@ -383,15 +478,24 @@ async def build_openai_ai_insights(findings: list[Finding], summary: dict[str, A
     return {"provider": "openai", "narrative": parsed.get("narrative", ""), "actions": parsed.get("actions", [])}
 
 
-@app.get("/")
-def dashboard(auth: AuthContext = Depends(require_role(VIEWER_ROLE))) -> HTMLResponse:
-    html = Path("templates/index.html").read_text(encoding="utf-8").replace("__USER_EMAIL__", auth.email or auth.subject)
+def _render_template(path: str, user: str) -> HTMLResponse:
+    html = Path(path).read_text(encoding="utf-8").replace("__USER_EMAIL__", user)
     return HTMLResponse(html)
 
 
+@app.get("/")
+def dashboard(auth: AuthContext = Depends(require_role(VIEWER_ROLE))) -> HTMLResponse:
+    return _render_template("templates/index.html", auth.email or auth.subject)
+
+
+@app.get("/chaos")
+def chaos_page(auth: AuthContext = Depends(require_role(ADMIN_ROLE))) -> HTMLResponse:
+    return _render_template("templates/chaos.html", auth.email or auth.subject)
+
+
 @app.get("/api/me")
-def me(auth: AuthContext = Depends(require_role(VIEWER_ROLE))) -> dict[str, Any]:
-    return {"subject": auth.subject, "email": auth.email, "roles": sorted(auth.roles), "auth_mode": AUTH_MODE}
+def me(request: Request, auth: AuthContext = Depends(require_role(VIEWER_ROLE))) -> dict[str, Any]:
+    return {"subject": auth.subject, "email": auth.email, "roles": sorted(auth.roles), "auth_mode": AUTH_MODE, "csrf_token": _csrf_token(request)}
 
 
 @app.get("/auth/login")
@@ -402,6 +506,7 @@ async def auth_login(request: Request) -> RedirectResponse:
     if client is None:
         raise HTTPException(status_code=500, detail="OIDC client not configured")
     redirect_uri = request.url_for("auth_callback")
+    audit("auth_login_start", request)
     return await client.authorize_redirect(request, redirect_uri)
 
 
@@ -417,12 +522,15 @@ async def auth_callback(request: Request) -> RedirectResponse:
     if not userinfo:
         userinfo = await client.parse_id_token(request, token)
     request.session["user"] = dict(userinfo)
+    _csrf_token(request)
+    audit("auth_login_success", request, sub=userinfo.get("sub"), email=userinfo.get("email"))
     return RedirectResponse(url="/", status_code=302)
 
 
 @app.get("/auth/logout")
 def auth_logout(request: Request) -> RedirectResponse:
     if hasattr(request, "session"):
+        audit("auth_logout", request, sub=request.session.get("user", {}).get("sub"))
         request.session.clear()
     return RedirectResponse(url="/auth/login" if AUTH_MODE == "oidc" else "/", status_code=302)
 
@@ -452,9 +560,10 @@ def list_findings(
 
 @app.post("/api/ingest/{scanner}")
 async def ingest_report(
+    request: Request,
     scanner: str,
     file: UploadFile = File(...),
-    _: AuthContext = Depends(require_ingestor_access),
+    auth: AuthContext = Depends(require_ingestor_access),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     report = json.loads(await file.read())
@@ -467,17 +576,20 @@ async def ingest_report(
     else:
         raise HTTPException(status_code=400, detail="Unsupported report format")
     ingested = await ingest_findings(db, findings)
+    audit("ingest_report", request, scanner=scanner, ingested=ingested, actor=auth.subject)
     return {"scanner": scanner, "ingested": ingested, "summary": summary_from_db(db)}
 
 
 @app.post("/api/mcp/ingest")
 async def ingest_from_mcp(
+    request: Request,
     payload: MCPIngestRequest,
-    _: AuthContext = Depends(require_ingestor_access),
+    auth: AuthContext = Depends(require_ingestor_access),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     findings = parse_generic_findings(payload.findings, scanner=payload.scanner, source=payload.source)
     ingested = await ingest_findings(db, findings)
+    audit("ingest_mcp", request, scanner=payload.scanner, ingested=ingested, actor=auth.subject)
     return {"scanner": payload.scanner, "source": payload.source, "ingested": ingested, "summary": summary_from_db(db)}
 
 
@@ -492,18 +604,51 @@ async def ai_insights(
     return await build_openai_ai_insights(findings, summary)
 
 
+@app.get("/api/admin/chaos")
+def get_chaos(_: AuthContext = Depends(require_role(ADMIN_ROLE))) -> dict[str, Any]:
+    return chaos.model_dump()
+
+
+@app.post("/api/admin/chaos")
+def set_chaos(request: Request, payload: ChaosUpdate, _: AuthContext = Depends(require_role(ADMIN_ROLE))) -> dict[str, Any]:
+    validate_csrf(request)
+    chaos.enabled = payload.enabled
+    chaos.latency_ms = payload.latency_ms
+    chaos.error_percent = payload.error_percent
+    audit("chaos_update", request, **payload.model_dump())
+    return chaos.model_dump()
+
+
 @app.delete("/api/admin/findings")
 def reset(
-    _: AuthContext = Depends(require_role(ADMIN_ROLE)),
+    request: Request,
+    auth: AuthContext = Depends(require_role(ADMIN_ROLE)),
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
-    db.query(FindingRecord).delete()
+    validate_csrf(request)
+    count = db.query(FindingRecord).delete()
     db.commit()
+    audit("admin_delete_findings", request, actor=auth.subject, deleted=count)
     return {"status": "ok"}
+
+
+def _auth_from_ws(websocket: WebSocket) -> AuthContext | None:
+    if AUTH_MODE != "oidc":
+        return AuthContext(subject="system", roles={VIEWER_ROLE, INGESTOR_ROLE, ADMIN_ROLE})
+    session_cookie = websocket.cookies.get("session")
+    if not session_cookie:
+        return None
+    # Session parsing is handled by middleware in HTTP only; for WS we require enabled mode + cookie presence as minimum gate.
+    # Production deployments should run behind authenticated frontend session and same-origin websocket.
+    return AuthContext(subject="oidc-session", roles={VIEWER_ROLE})
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
+    auth = _auth_from_ws(websocket)
+    if not auth or VIEWER_ROLE not in auth.roles:
+        await websocket.close(code=1008)
+        return
     await ws_manager.connect(websocket)
     try:
         await websocket.send_json({"type": "refresh"})

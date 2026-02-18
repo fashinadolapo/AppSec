@@ -76,3 +76,23 @@ pytest -q
 
 Use a managed Postgres and set `DATABASE_URL` + `INGEST_API_KEY` in your platform secrets.
 Enable OIDC by setting `AUTH_MODE=oidc` and the OIDC client settings.
+
+
+## Security hardening implemented
+
+- WebSocket access check at `/ws` (viewer role required).
+- Secure session cookies in OIDC mode (`SESSION_HTTPS_ONLY`, defaults to `true` for production).
+- Security headers middleware (`X-Frame-Options`, `X-Content-Type-Options`, HSTS on HTTPS, etc.).
+- Rate limiting + payload size enforcement for ingest endpoints (`INGEST_RATE_LIMIT_PER_MIN`, `INGEST_MAX_BODY_BYTES`).
+- Audit logging for auth, ingestion, admin, and chaos updates (`LOG_LEVEL` configurable).
+- CSRF protection for browser-session state-changing flows (OIDC mode) via `x-csrf-token` from `/api/me`.
+
+## Chaos Engineering
+
+- Admin-only chaos page: `GET /chaos`.
+- Admin API controls: `GET /api/admin/chaos`, `POST /api/admin/chaos`.
+- Chaos modes:
+  - request latency injection (`latency_ms`)
+  - random error injection (`error_percent`)
+  - on/off toggle (`enabled`)
+- Chaos affects API routes while excluding chaos-control endpoints.

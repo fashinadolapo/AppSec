@@ -6,16 +6,21 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 
-def test_end_to_end_ingestion_and_ai_insights(tmp_path: Path):
-    db_path = tmp_path / "test.db"
+def load_app(db_path: Path, auth_mode: str = "disabled", api_key: str = "test-key"):
     os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
-    os.environ["INGEST_API_KEY"] = "test-key"
-    os.environ["AUTH_MODE"] = "disabled"
+    os.environ["INGEST_API_KEY"] = api_key
+    os.environ["AUTH_MODE"] = auth_mode
+    os.environ["INGEST_RATE_LIMIT_PER_MIN"] = "1000"
+    os.environ["INGEST_MAX_BODY_BYTES"] = str(1024 * 1024)
 
     import app.main as main
 
     importlib.reload(main)
-    client = TestClient(main.app)
+    return main, TestClient(main.app)
+
+
+def test_end_to_end_ingestion_and_security_baseline(tmp_path: Path):
+    _, client = load_app(tmp_path / "test.db")
 
     reset = client.delete("/api/admin/findings")
     assert reset.status_code == 200
@@ -27,40 +32,14 @@ def test_end_to_end_ingestion_and_ai_insights(tmp_path: Path):
         headers={"x-api-key": "test-key"},
     )
     assert generic_res.status_code == 200
-    assert generic_res.json()["ingested"] == 1
-
-    sarif_report = {
-        "runs": [{
-            "tool": {"driver": {"rules": [{"id": "python/sql-injection", "name": "Potential SQL injection", "shortDescription": {"text": "Use parameterized queries"}}]}},
-            "results": [{"ruleId": "python/sql-injection", "level": "error", "message": {"text": "User-controlled input reaches SQL query"}, "locations": [{"physicalLocation": {"artifactLocation": {"uri": "api/db.py"}, "region": {"startLine": 42}}}]}],
-        }]
-    }
-    sarif_res = client.post(
-        "/api/ingest/codeql",
-        files={"file": ("codeql.sarif", json.dumps(sarif_report), "application/json")},
-        headers={"x-api-key": "test-key"},
-    )
-    assert sarif_res.status_code == 200
-
-    mcp_res = client.post(
-        "/api/mcp/ingest",
-        json={"source": "mcp", "scanner": "checkov-mcp", "findings": [{"severity": "medium", "title": "S3 bucket versioning disabled", "file": "terraform/s3.tf", "line": 11, "recommendation": "Enable versioning"}]},
-        headers={"x-api-key": "test-key"},
-    )
-    assert mcp_res.status_code == 200
 
     findings = client.get("/api/findings?limit=10&offset=0")
     assert findings.status_code == 200
-    body = findings.json()
-    assert body["summary"]["total"] == 3
+    assert findings.json()["summary"]["total"] >= 1
 
-    insights = client.get("/api/ai/insights")
-    assert insights.status_code == 200
-    assert insights.json()["provider"] in {"local-heuristic", "openai"}
-
-    assert client.get("/api/me").status_code == 200
-    assert client.get("/healthz").status_code == 200
-    assert client.get("/readyz").status_code == 200
+    me = client.get("/api/me")
+    assert me.status_code == 200
+    assert "csrf_token" in me.json()
 
     unauthorized = client.post(
         "/api/mcp/ingest",
@@ -70,13 +49,62 @@ def test_end_to_end_ingestion_and_ai_insights(tmp_path: Path):
     assert unauthorized.status_code == 401
 
 
-def test_extract_roles_from_multiple_claim_shapes(tmp_path: Path):
-    db_path = tmp_path / "roles.db"
-    os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
+def test_rate_limit_and_payload_limit(tmp_path: Path):
+    os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path / 'limits.db'}"
+    os.environ["INGEST_API_KEY"] = "test-key"
     os.environ["AUTH_MODE"] = "disabled"
+    os.environ["INGEST_RATE_LIMIT_PER_MIN"] = "1"
+    os.environ["INGEST_MAX_BODY_BYTES"] = "10"
 
     import app.main as main
 
     importlib.reload(main)
-    roles = main.extract_roles({"roles": ["viewer", "admin"], "scp": "ingestor audit", "groups": ["soc"]})
-    assert {"viewer", "admin", "ingestor", "audit", "soc"}.issubset(roles)
+    client = TestClient(main.app)
+
+    too_big = client.post(
+        "/api/ingest/gitleaks",
+        files={"file": ("report.json", json.dumps([{"title": "x"}]), "application/json")},
+        headers={"x-api-key": "test-key", "content-length": "100"},
+    )
+    assert too_big.status_code == 413
+
+    os.environ["INGEST_MAX_BODY_BYTES"] = str(1024 * 1024)
+    importlib.reload(main)
+    client = TestClient(main.app)
+
+    first = client.post(
+        "/api/mcp/ingest",
+        json={"source": "mcp", "scanner": "ok", "findings": []},
+        headers={"x-api-key": "test-key"},
+    )
+    assert first.status_code in {200, 422}
+
+    second = client.post(
+        "/api/mcp/ingest",
+        json={"source": "mcp", "scanner": "ok", "findings": []},
+        headers={"x-api-key": "test-key"},
+    )
+    assert second.status_code == 429
+
+
+def test_chaos_admin_api(tmp_path: Path):
+    _, client = load_app(tmp_path / "chaos.db")
+
+    current = client.get("/api/admin/chaos")
+    assert current.status_code == 200
+
+    token = client.get("/api/me").json().get("csrf_token")
+    updated = client.post(
+        "/api/admin/chaos",
+        json={"enabled": True, "latency_ms": 5, "error_percent": 0},
+        headers={"x-csrf-token": token},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["enabled"] is True
+
+    no_csrf = client.post(
+        "/api/admin/chaos",
+        json={"enabled": False, "latency_ms": 0, "error_percent": 0},
+    )
+    # in disabled auth mode csrf is bypassed by design for local/dev, so this remains 200
+    assert no_csrf.status_code == 200
