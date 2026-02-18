@@ -96,3 +96,31 @@ Enable OIDC by setting `AUTH_MODE=oidc` and the OIDC client settings.
   - random error injection (`error_percent`)
   - on/off toggle (`enabled`)
 - Chaos affects API routes while excluding chaos-control endpoints.
+
+
+## CI/CD pipeline (GitHub Actions)
+
+A multi-stage workflow is included at `.github/workflows/ci-cd.yml`:
+
+1. **test-and-security**
+   - install dependencies
+   - run `pytest -q`
+   - run `pip-audit --strict`
+2. **build-image**
+   - build and (non-PR) push image to GHCR
+3. **deploy-staging**
+   - trigger staging deploy webhook
+   - run smoke checks against `/healthz` and `/readyz`
+4. **deploy-production**
+   - gated by staging success and GitHub `production` environment
+
+### Required GitHub environment secrets
+
+For **staging** environment:
+- `STAGING_DEPLOY_WEBHOOK`
+- `STAGING_BASE_URL`
+
+For **production** environment:
+- `PRODUCTION_DEPLOY_WEBHOOK`
+
+Tip: use GitHub Environment protection rules (required reviewers) on `production` for manual approval gates.
