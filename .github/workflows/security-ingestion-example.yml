@@ -6,32 +6,17 @@ on:
 jobs:
   scan-and-publish:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - scanner: semgrep
-            project_id: team-a
-            file_name: semgrep.json
-            payload: '{"results":[{"check_id":"demo.semgrep","path":"src/app.py","start":{"line":8},"extra":{"severity":"ERROR","message":"Demo Semgrep finding"}}]}'
-          - scanner: sonarqube
-            project_id: team-b
-            file_name: sonarqube.json
-            payload: '{"issues":[{"rule":"python:S3649","severity":"CRITICAL","message":"Demo Sonar finding","component":"src/db.py","line":12}]}'
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build scanner payload
+      - name: Run Semgrep SARIF
         run: |
-          printf '%s' '${{ matrix.payload }}' > '${{ matrix.file_name }}'
+          echo '{"runs":[]}' > semgrep.sarif
 
       - name: Send report to dashboard backend
         env:
           APPSEC_DASHBOARD_URL: ${{ secrets.APPSEC_DASHBOARD_URL }}
-          INGEST_API_KEY: ${{ secrets.INGEST_API_KEY }}
         run: |
-          curl -fsS -X POST \
-            -H "x-api-key: $INGEST_API_KEY" \
-            -F "file=@${{ matrix.file_name }}" \
-            "$APPSEC_DASHBOARD_URL/api/ingest/${{ matrix.scanner }}?project_id=${{ matrix.project_id }}"
+          curl -sS -X POST \
+            -F "file=@semgrep.sarif" \
+            "$APPSEC_DASHBOARD_URL/api/ingest/semgrep"
