@@ -29,10 +29,10 @@ Defaults can be changed with env vars: `VIEWER_ROLE`, `INGESTOR_ROLE`, `ADMIN_RO
 - `GET /api/me` identity + roles (viewer)
 - `GET /api/findings?project_id=default&limit=100&offset=0` (viewer)
 - `POST /api/ingest/{scanner}` (ingestor or API key; scanner-aware connectors)
-- `POST /api/mcp/ingest` (ingestor or API key)
+- `POST /api/mcp/ingest` (ingestor or API key; supports `project_id`)
 - `GET /api/ai/insights?project_id=default` (viewer)
 - `GET /api/projects` (viewer)
-- `DELETE /api/admin/findings` (admin)
+- `DELETE /api/admin/findings?project_id=<id>` (admin; project-scoped optional)
 - `GET /auth/login` (OIDC login start)
 - `GET /auth/callback` (OIDC callback)
 - `GET /auth/logout` (clear local session)
@@ -110,21 +110,25 @@ A multi-stage workflow is included at `.github/workflows/ci-cd.yml`:
 2. **build-image**
    - build and (non-PR) push image to GHCR
 3. **deploy-staging**
-   - trigger staging deploy webhook
+   - deploy to Google Cloud Run staging service
    - run smoke checks against `/healthz` and `/readyz`
 4. **deploy-production**
+   - deploy to Google Cloud Run production service
    - gated by staging success and GitHub `production` environment
 
 ### Required GitHub environment secrets
 
 For **staging** environment:
-- `STAGING_DEPLOY_WEBHOOK`
-- `STAGING_BASE_URL`
+- `GCP_SA_KEY`
+- `GCP_REGION`
+- `CLOUDRUN_SERVICE_STAGING`
 
 For **production** environment:
-- `PRODUCTION_DEPLOY_WEBHOOK`
+- `GCP_SA_KEY`
+- `GCP_REGION`
+- `CLOUDRUN_SERVICE_PRODUCTION`
 
-Tip: use GitHub Environment protection rules (required reviewers) on `production` for manual approval gates.
+Deploy target is Google Cloud Run via `google-github-actions/deploy-cloudrun`. Use GitHub Environment protection rules on `production` for manual approval gates.
 
 
 ## Scanner connector pack
@@ -136,6 +140,10 @@ The ingestion route now includes scanner-aware normalization for:
 - `checkov` JSON (`results.failed_checks`)
 - `zap` JSON (`site[].alerts[]`)
 - `nuclei` JSON list (`template-id`, `info`)
+- `sonarqube` JSON (`issues`)
+- `snykcode` JSON (`issues`/`vulnerabilities`)
+- `horusec` JSON (`analysisVulnerabilities`)
+- `stackhawk` JSON (`vulnerabilities`)
 - SARIF (`runs`) for tools like CodeQL/Semgrep SARIF
 
 For unknown formats, the service falls back to generic JSON mapping (`findings`/list/results).
@@ -148,3 +156,17 @@ Findings are now isolated by `project_id` so multiple teams/environments can sha
 - ingest accepts `project_id` query param (e.g. `/api/ingest/semgrep?project_id=team-a`)
 - findings and AI insights are project-filtered by default (`project_id=default`)
 - project inventory endpoint (`/api/projects`) returns known projects and finding counts
+
+
+## Database migrations (Alembic)
+
+Alembic is configured under `alembic/` with an initial revision (`0001_initial`).
+
+Common commands:
+
+```bash
+alembic upgrade head
+alembic downgrade -1
+```
+
+`DATABASE_URL` is respected by migration execution.

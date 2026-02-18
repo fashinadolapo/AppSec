@@ -80,7 +80,8 @@ class FindingRecord(Base):
     raw: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
 
-Base.metadata.create_all(bind=engine)
+if os.getenv("ALEMBIC_MIGRATION") != "1":
+    Base.metadata.create_all(bind=engine)
 
 
 class Finding(BaseModel):
@@ -104,6 +105,7 @@ class Finding(BaseModel):
 class MCPIngestRequest(BaseModel):
     source: str = "mcp"
     scanner: str = "mcp-adapter"
+    project_id: str = "default"
     findings: list[dict[str, Any]]
 
 
@@ -268,6 +270,12 @@ def get_db() -> Any:
         db.close()
 
 
+def _auth_context_from_claims(claims: dict[str, Any] | None) -> AuthContext | None:
+    if not claims:
+        return None
+    return AuthContext(subject=str(claims.get("sub", "unknown")), email=claims.get("email"), roles=extract_roles(claims))
+
+
 def _claims_from_session(request: Request) -> dict[str, Any] | None:
     user = request.session.get("user") if hasattr(request, "session") else None
     return user if isinstance(user, dict) else None
@@ -278,9 +286,7 @@ def optional_auth(request: Request) -> AuthContext | None:
         return AuthContext(subject="system", email="system@appsec.local", roles={VIEWER_ROLE, INGESTOR_ROLE, ADMIN_ROLE})
 
     claims = _claims_from_session(request)
-    if not claims:
-        return None
-    return AuthContext(subject=str(claims.get("sub", "unknown")), email=claims.get("email"), roles=extract_roles(claims))
+    return _auth_context_from_claims(claims)
 
 
 def require_role(role: str):
@@ -506,6 +512,88 @@ def parse_nuclei_json(report: list[dict[str, Any]], scanner: str = "nuclei", pro
     return findings
 
 
+
+def parse_sonar_json(report: dict[str, Any], scanner: str = "sonarqube", project_id: str = "default") -> list[Finding]:
+    findings: list[Finding] = []
+    for issue in report.get("issues", []):
+        findings.append(
+            Finding(
+                scanner=scanner,
+                project_id=project_id,
+                severity=str(issue.get("severity", "medium")).lower(),
+                rule_id=issue.get("rule", "unknown"),
+                title=issue.get("message", "Sonar issue"),
+                description=issue.get("message", ""),
+                recommendation="Review rule guidance in SonarQube and remediate.",
+                file_path=issue.get("component", ""),
+                line=issue.get("line"),
+                raw=issue,
+            )
+        )
+    return findings
+
+
+def parse_snyk_code_json(report: dict[str, Any], scanner: str = "snykcode", project_id: str = "default") -> list[Finding]:
+    findings: list[Finding] = []
+    issues = report.get("issues") or report.get("vulnerabilities") or []
+    for issue in issues:
+        findings.append(
+            Finding(
+                scanner=scanner,
+                project_id=project_id,
+                severity=str(issue.get("severity", "medium")).lower(),
+                rule_id=issue.get("id", issue.get("rule", "unknown")),
+                title=issue.get("title", "Snyk Code issue"),
+                description=issue.get("description", ""),
+                recommendation=issue.get("remediation", ""),
+                file_path=issue.get("filePath", issue.get("path", "")),
+                line=issue.get("lineNumber", issue.get("line")),
+                raw=issue,
+            )
+        )
+    return findings
+
+
+def parse_horusec_json(report: dict[str, Any], scanner: str = "horusec", project_id: str = "default") -> list[Finding]:
+    findings: list[Finding] = []
+    vulnerabilities = report.get("analysisVulnerabilities") or report.get("vulnerabilities") or []
+    for vuln in vulnerabilities:
+        details = vuln.get("vulnerabilities", vuln)
+        findings.append(
+            Finding(
+                scanner=scanner,
+                project_id=project_id,
+                severity=str(details.get("severity", "medium")).lower(),
+                rule_id=details.get("rule_id", details.get("ruleID", "unknown")),
+                title=details.get("type", details.get("details", "Horusec issue")),
+                description=details.get("details", ""),
+                recommendation=details.get("recommendation", ""),
+                file_path=details.get("file", details.get("filePath", "")),
+                line=details.get("line"),
+                raw=vuln,
+            )
+        )
+    return findings
+
+
+def parse_stackhawk_json(report: dict[str, Any], scanner: str = "stackhawk", project_id: str = "default") -> list[Finding]:
+    findings: list[Finding] = []
+    for vuln in report.get("vulnerabilities", []):
+        findings.append(
+            Finding(
+                scanner=scanner,
+                project_id=project_id,
+                severity=str(vuln.get("severity", "medium")).lower(),
+                rule_id=vuln.get("pluginId", vuln.get("id", "unknown")),
+                title=vuln.get("name", "StackHawk vulnerability"),
+                description=vuln.get("description", ""),
+                recommendation=vuln.get("recommendation", ""),
+                file_path=vuln.get("path", vuln.get("url", "")),
+                raw=vuln,
+            )
+        )
+    return findings
+
 def detect_and_parse_report(report: Any, scanner: str, project_id: str = "default") -> list[Finding]:
     normalized = scanner.lower()
     if isinstance(report, dict) and "runs" in report:
@@ -520,6 +608,14 @@ def detect_and_parse_report(report: Any, scanner: str, project_id: str = "defaul
         return parse_zap_json(report, normalized, project_id=project_id)
     if normalized == "nuclei" and isinstance(report, list) and report and isinstance(report[0], dict) and "template-id" in report[0]:
         return parse_nuclei_json(report, normalized, project_id=project_id)
+    if normalized in {"sonar", "sonarqube"} and isinstance(report, dict) and isinstance(report.get("issues"), list):
+        return parse_sonar_json(report, "sonarqube", project_id=project_id)
+    if normalized in {"snyk", "snykcode"} and isinstance(report, dict) and (isinstance(report.get("issues"), list) or isinstance(report.get("vulnerabilities"), list)):
+        return parse_snyk_code_json(report, "snykcode", project_id=project_id)
+    if normalized == "horusec" and isinstance(report, dict) and (isinstance(report.get("analysisVulnerabilities"), list) or isinstance(report.get("vulnerabilities"), list)):
+        return parse_horusec_json(report, "horusec", project_id=project_id)
+    if normalized == "stackhawk" and isinstance(report, dict) and isinstance(report.get("vulnerabilities"), list):
+        return parse_stackhawk_json(report, "stackhawk", project_id=project_id)
     if isinstance(report, list):
         return parse_generic_findings(report, normalized, project_id=project_id)
     if isinstance(report, dict) and isinstance(report.get("findings"), list):
@@ -724,10 +820,10 @@ async def ingest_from_mcp(
     auth: AuthContext = Depends(require_ingestor_access),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    findings = parse_generic_findings(payload.findings, scanner=payload.scanner, source=payload.source, project_id="default")
+    findings = parse_generic_findings(payload.findings, scanner=payload.scanner, source=payload.source, project_id=payload.project_id)
     ingested = await ingest_findings(db, findings)
     audit("ingest_mcp", request, scanner=payload.scanner, ingested=ingested, actor=auth.subject)
-    return {"scanner": payload.scanner, "source": payload.source, "ingested": ingested, "summary": summary_from_db(db)}
+    return {"scanner": payload.scanner, "project_id": payload.project_id, "source": payload.source, "ingested": ingested, "summary": summary_from_db(db, project_id=payload.project_id)}
 
 
 @app.get("/api/ai/insights")
@@ -774,25 +870,28 @@ def set_chaos(request: Request, payload: ChaosUpdate, _: AuthContext = Depends(r
 @app.delete("/api/admin/findings")
 def reset(
     request: Request,
+    project_id: str | None = Query(default=None),
     auth: AuthContext = Depends(require_role(ADMIN_ROLE)),
     db: Session = Depends(get_db),
-) -> dict[str, str]:
+) -> dict[str, Any]:
     validate_csrf(request)
-    count = db.query(FindingRecord).delete()
+    query = db.query(FindingRecord)
+    if project_id:
+        query = query.filter(FindingRecord.project_id == project_id)
+    count = query.delete()
     db.commit()
-    audit("admin_delete_findings", request, actor=auth.subject, deleted=count)
-    return {"status": "ok"}
+    audit("admin_delete_findings", request, actor=auth.subject, deleted=count, project_id=project_id)
+    return {"status": "ok", "deleted": count, "project_id": project_id}
 
 
 def _auth_from_ws(websocket: WebSocket) -> AuthContext | None:
     if AUTH_MODE != "oidc":
         return AuthContext(subject="system", roles={VIEWER_ROLE, INGESTOR_ROLE, ADMIN_ROLE})
-    session_cookie = websocket.cookies.get("session")
-    if not session_cookie:
-        return None
-    # Session parsing is handled by middleware in HTTP only; for WS we require enabled mode + cookie presence as minimum gate.
-    # Production deployments should run behind authenticated frontend session and same-origin websocket.
-    return AuthContext(subject="oidc-session", roles={VIEWER_ROLE})
+
+    session_data = websocket.scope.get("session") or {}
+    claims = session_data.get("user") if isinstance(session_data, dict) else None
+    auth = _auth_context_from_claims(claims if isinstance(claims, dict) else None)
+    return auth
 
 
 @app.websocket("/ws")

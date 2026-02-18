@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 
 def load_app(db_path: Path, auth_mode: str = "disabled", api_key: str = "test-key"):
@@ -256,3 +257,61 @@ def test_project_scoped_findings_and_summary(tmp_path: Path):
     projects = client.get("/api/projects").json()["projects"]
     project_ids = {p["project_id"] for p in projects}
     assert {"team-a", "team-b"}.issubset(project_ids)
+
+
+
+def test_remaining_connectors_parsing(tmp_path: Path):
+    _, client = load_app(tmp_path / "more_connectors.db")
+
+    sonar = {"issues": [{"rule": "python:S3649", "severity": "CRITICAL", "message": "SQL injection", "component": "src/db.py", "line": 22}]}
+    snyk = {"issues": [{"id": "js/sql-injection", "severity": "high", "title": "SQL Injection", "description": "Unsanitized query", "filePath": "api.js", "lineNumber": 5}]}
+    horusec = {"analysisVulnerabilities": [{"vulnerabilities": {"severity": "LOW", "ruleID": "HS001", "details": "Weak crypto", "file": "crypto.go", "line": 9}}]}
+    stackhawk = {"vulnerabilities": [{"pluginId": "10021", "name": "Missing CSP", "severity": "medium", "path": "/", "description": "CSP missing"}]}
+
+    for scanner, payload in [("sonarqube", sonar), ("snykcode", snyk), ("horusec", horusec), ("stackhawk", stackhawk)]:
+        res = client.post(
+            f"/api/ingest/{scanner}",
+            files={"file": (f"{scanner}.json", json.dumps(payload), "application/json")},
+            headers={"x-api-key": "test-key"},
+        )
+        assert res.status_code == 200
+
+    summary = client.get("/api/findings?limit=50").json()["summary"]["by_scanner"]
+    assert summary["sonarqube"] == 1
+    assert summary["snykcode"] == 1
+    assert summary["horusec"] == 1
+    assert summary["stackhawk"] == 1
+
+
+def test_mcp_and_admin_project_scoping(tmp_path: Path):
+    _, client = load_app(tmp_path / "mcp_scope.db")
+
+    mcp = client.post(
+        "/api/mcp/ingest",
+        json={"source": "mcp", "scanner": "checkov", "project_id": "team-x", "findings": [{"title": "Open SG", "severity": "high"}]},
+        headers={"x-api-key": "test-key"},
+    )
+    assert mcp.status_code == 200
+    assert mcp.json()["project_id"] == "team-x"
+
+    scoped = client.get("/api/findings?project_id=team-x").json()
+    assert scoped["summary"]["total"] == 1
+
+    deleted = client.delete("/api/admin/findings?project_id=team-x")
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] >= 1
+
+
+def test_websocket_auth_parity_gate(tmp_path: Path):
+    _, client = load_app(tmp_path / "ws.db")
+
+    os.environ["AUTH_MODE"] = "oidc"
+    import app.main as main
+    importlib.reload(main)
+    client_oidc = TestClient(main.app)
+
+    try:
+        with client_oidc.websocket_connect("/ws"):
+            assert False, "expected websocket to reject unauthenticated connection"
+    except WebSocketDisconnect as exc:
+        assert exc.code == 1008

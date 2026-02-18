@@ -29,6 +29,11 @@ jobs:
       - name: Run tests
         run: pytest -q
 
+      - name: Migration check
+        run: |
+          python -m pip install alembic==1.14.0
+          DATABASE_URL=sqlite:///./ci_migration.db alembic upgrade head
+
       - name: Basic security checks
         run: |
           python -m pip install pip-audit==2.9.0
@@ -40,6 +45,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.tags }}
     steps:
       - uses: actions/checkout@v4
 
@@ -67,7 +74,9 @@ jobs:
         with:
           context: .
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: |
+            ${{ steps.meta.outputs.tags }}
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
           labels: ${{ steps.meta.outputs.labels }}
 
   deploy-staging:
@@ -75,46 +84,65 @@ jobs:
     needs: build-image
     if: github.event_name != 'pull_request'
     environment: staging
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
-      - name: Deploy to staging (placeholder)
-        env:
-          STAGING_DEPLOY_WEBHOOK: ${{ secrets.STAGING_DEPLOY_WEBHOOK }}
-        run: |
-          if [ -z "$STAGING_DEPLOY_WEBHOOK" ]; then
-            echo "Missing STAGING_DEPLOY_WEBHOOK secret" >&2
-            exit 1
-          fi
-          curl -sS -X POST "$STAGING_DEPLOY_WEBHOOK" \
-            -H 'Content-Type: application/json' \
-            -d '{"ref":"'"${GITHUB_SHA}"'","environment":"staging"}'
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Staging smoke checks (health/readiness)
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy to Cloud Run (staging)
+        id: deploy-staging
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ secrets.CLOUDRUN_SERVICE_STAGING }}
+          region: ${{ secrets.GCP_REGION }}
+          image: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+
+      - name: Staging smoke checks
         env:
-          STAGING_BASE_URL: ${{ secrets.STAGING_BASE_URL }}
+          STAGING_URL: ${{ steps.deploy-staging.outputs.url }}
         run: |
-          if [ -z "$STAGING_BASE_URL" ]; then
-            echo "Missing STAGING_BASE_URL secret" >&2
-            exit 1
-          fi
-          curl -fsS "$STAGING_BASE_URL/healthz"
-          curl -fsS "$STAGING_BASE_URL/readyz"
+          curl -fsS "$STAGING_URL/healthz"
+          curl -fsS "$STAGING_URL/readyz"
 
   deploy-production:
     runs-on: ubuntu-latest
     needs: deploy-staging
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     environment: production
+    permissions:
+      contents: read
+      id-token: write
     steps:
-      - name: Deploy to production (placeholder)
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy to Cloud Run (production)
+        id: deploy-prod
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ secrets.CLOUDRUN_SERVICE_PRODUCTION }}
+          region: ${{ secrets.GCP_REGION }}
+          image: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+
+      - name: Production smoke checks
         env:
-          PRODUCTION_DEPLOY_WEBHOOK: ${{ secrets.PRODUCTION_DEPLOY_WEBHOOK }}
+          PROD_URL: ${{ steps.deploy-prod.outputs.url }}
         run: |
-          if [ -z "$PRODUCTION_DEPLOY_WEBHOOK" ]; then
-            echo "Missing PRODUCTION_DEPLOY_WEBHOOK secret" >&2
-            exit 1
-          fi
-          curl -sS -X POST "$PRODUCTION_DEPLOY_WEBHOOK" \
-            -H 'Content-Type: application/json' \
-            -d '{"ref":"'"${GITHUB_SHA}"'","environment":"production"}'
+          curl -fsS "$PROD_URL/healthz"
+          curl -fsS "$PROD_URL/readyz"
