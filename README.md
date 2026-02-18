@@ -131,6 +131,16 @@ For **production** environment:
 Deploy target is Google Cloud Run via `google-github-actions/deploy-cloudrun`. Use GitHub Environment protection rules on `production` for manual approval gates.
 
 
+
+## Rollout runbook and helper scripts
+
+Use `docs/operations/staging-production-rollout.md` for the full staging→production checklist, including secrets, environment protection gates, validation, and testing-phase execution.
+
+Helper scripts:
+
+- `./scripts/configure_github_env_secrets.sh <owner/repo>`: sets required `staging`/`production` environment secrets via GitHub CLI (`gh`).
+- `INGEST_API_KEY=... ./scripts/validate_staging.sh <staging-url>`: runs `/healthz` + `/readyz` probes and scoped ingest checks (`project_id=team-a/team-b`) before production approval.
+
 ## Scanner connector pack
 
 The ingestion route now includes scanner-aware normalization for:
