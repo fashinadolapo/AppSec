@@ -15,10 +15,13 @@ fi
 REPO="$1"
 
 required_vars=(
-  GCP_SA_KEY
-  GCP_REGION
-  CLOUDRUN_SERVICE_STAGING
-  CLOUDRUN_SERVICE_PRODUCTION
+  AWS_ROLE_TO_ASSUME
+  AWS_REGION
+  ECR_REPOSITORY
+  APP_RUNNER_SERVICE_ARN_STAGING
+  APP_BASE_URL_STAGING
+  APP_RUNNER_SERVICE_ARN_PRODUCTION
+  APP_BASE_URL_PRODUCTION
 )
 
 missing=0
@@ -32,24 +35,31 @@ done
 if [[ $missing -eq 1 ]]; then
   cat >&2 <<MSG
 
-Set the required values in your shell first, for example:
-  export GCP_REGION=us-central1
-  export CLOUDRUN_SERVICE_STAGING=appsec-staging
-  export CLOUDRUN_SERVICE_PRODUCTION=appsec-prod
-  export GCP_SA_KEY='{"type":"service_account",...}'
+Set required values in your shell first, for example:
+  export AWS_ROLE_TO_ASSUME='arn:aws:iam::<account-id>:role/github-actions-deploy'
+  export AWS_REGION='us-east-1'
+  export ECR_REPOSITORY='appsec-fusion-dashboard'
+  export APP_RUNNER_SERVICE_ARN_STAGING='arn:aws:apprunner:...:service/appsec-staging/...'
+  export APP_BASE_URL_STAGING='https://staging.example.com'
+  export APP_RUNNER_SERVICE_ARN_PRODUCTION='arn:aws:apprunner:...:service/appsec-production/...'
+  export APP_BASE_URL_PRODUCTION='https://app.example.com'
 MSG
   exit 1
 fi
 
 echo "Setting staging secrets on $REPO ..."
-printf '%s' "$GCP_SA_KEY" | gh secret set GCP_SA_KEY --repo "$REPO" --env staging --body -
-printf '%s' "$GCP_REGION" | gh secret set GCP_REGION --repo "$REPO" --env staging --body -
-printf '%s' "$CLOUDRUN_SERVICE_STAGING" | gh secret set CLOUDRUN_SERVICE_STAGING --repo "$REPO" --env staging --body -
+printf '%s' "$AWS_ROLE_TO_ASSUME" | gh secret set AWS_ROLE_TO_ASSUME --repo "$REPO" --env staging --body -
+printf '%s' "$AWS_REGION" | gh secret set AWS_REGION --repo "$REPO" --env staging --body -
+printf '%s' "$ECR_REPOSITORY" | gh secret set ECR_REPOSITORY --repo "$REPO" --env staging --body -
+printf '%s' "$APP_RUNNER_SERVICE_ARN_STAGING" | gh secret set APP_RUNNER_SERVICE_ARN_STAGING --repo "$REPO" --env staging --body -
+printf '%s' "$APP_BASE_URL_STAGING" | gh secret set APP_BASE_URL_STAGING --repo "$REPO" --env staging --body -
 
 echo "Setting production secrets on $REPO ..."
-printf '%s' "$GCP_SA_KEY" | gh secret set GCP_SA_KEY --repo "$REPO" --env production --body -
-printf '%s' "$GCP_REGION" | gh secret set GCP_REGION --repo "$REPO" --env production --body -
-printf '%s' "$CLOUDRUN_SERVICE_PRODUCTION" | gh secret set CLOUDRUN_SERVICE_PRODUCTION --repo "$REPO" --env production --body -
+printf '%s' "$AWS_ROLE_TO_ASSUME" | gh secret set AWS_ROLE_TO_ASSUME --repo "$REPO" --env production --body -
+printf '%s' "$AWS_REGION" | gh secret set AWS_REGION --repo "$REPO" --env production --body -
+printf '%s' "$ECR_REPOSITORY" | gh secret set ECR_REPOSITORY --repo "$REPO" --env production --body -
+printf '%s' "$APP_RUNNER_SERVICE_ARN_PRODUCTION" | gh secret set APP_RUNNER_SERVICE_ARN_PRODUCTION --repo "$REPO" --env production --body -
+printf '%s' "$APP_BASE_URL_PRODUCTION" | gh secret set APP_BASE_URL_PRODUCTION --repo "$REPO" --env production --body -
 
 echo "Done. Configure production environment protection rules in GitHub UI:"
 echo "  Settings -> Environments -> production -> Required reviewers / wait timer"

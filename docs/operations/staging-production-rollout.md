@@ -1,21 +1,24 @@
 # Staging/Production Rollout and Validation Runbook
 
-This runbook operationalizes the deployment checklist for the CI/CD pipeline.
+This runbook operationalizes the AWS deployment checklist for the CI/CD pipeline (ECR + App Runner).
 
 ## 1) Configure GitHub Environment secrets
 
 The CI/CD workflow expects the following secrets:
 
-- `staging`: `GCP_SA_KEY`, `GCP_REGION`, `CLOUDRUN_SERVICE_STAGING`
-- `production`: `GCP_SA_KEY`, `GCP_REGION`, `CLOUDRUN_SERVICE_PRODUCTION`
+- `staging`: `AWS_ROLE_TO_ASSUME`, `AWS_REGION`, `ECR_REPOSITORY`, `APP_RUNNER_SERVICE_ARN_STAGING`, `APP_BASE_URL_STAGING`
+- `production`: `AWS_ROLE_TO_ASSUME`, `AWS_REGION`, `ECR_REPOSITORY`, `APP_RUNNER_SERVICE_ARN_PRODUCTION`, `APP_BASE_URL_PRODUCTION`
 
 Use helper script:
 
 ```bash
-export GCP_SA_KEY='{"type":"service_account",...}'
-export GCP_REGION='us-central1'
-export CLOUDRUN_SERVICE_STAGING='appsec-staging'
-export CLOUDRUN_SERVICE_PRODUCTION='appsec-production'
+export AWS_ROLE_TO_ASSUME='arn:aws:iam::<account-id>:role/github-actions-deploy'
+export AWS_REGION='us-east-1'
+export ECR_REPOSITORY='appsec-fusion-dashboard'
+export APP_RUNNER_SERVICE_ARN_STAGING='arn:aws:apprunner:...:service/appsec-staging/...'
+export APP_BASE_URL_STAGING='https://staging.example.com'
+export APP_RUNNER_SERVICE_ARN_PRODUCTION='arn:aws:apprunner:...:service/appsec-production/...'
+export APP_BASE_URL_PRODUCTION='https://app.example.com'
 ./scripts/configure_github_env_secrets.sh <owner/repo>
 ```
 
@@ -49,7 +52,7 @@ Run automated smoke + scoped-ingest checks:
 
 ```bash
 export INGEST_API_KEY='<staging-ingest-key>'
-./scripts/validate_staging.sh <staging-cloud-run-url>
+./scripts/validate_staging.sh <staging-app-url>
 ```
 
 This validates:

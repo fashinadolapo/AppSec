@@ -108,27 +108,31 @@ A multi-stage workflow is included at `.github/workflows/ci-cd.yml`:
    - run `pytest -q`
    - run `pip-audit --strict`
 2. **build-image**
-   - build and (non-PR) push image to GHCR
+   - build and (non-PR) push image to Amazon ECR
 3. **deploy-staging**
-   - deploy to Google Cloud Run staging service
+   - deploy to AWS App Runner staging service
    - run smoke checks against `/healthz` and `/readyz`
 4. **deploy-production**
-   - deploy to Google Cloud Run production service
+   - deploy to AWS App Runner production service
    - gated by staging success and GitHub `production` environment
 
 ### Required GitHub environment secrets
 
 For **staging** environment:
-- `GCP_SA_KEY`
-- `GCP_REGION`
-- `CLOUDRUN_SERVICE_STAGING`
+- `AWS_ROLE_TO_ASSUME`
+- `AWS_REGION`
+- `ECR_REPOSITORY`
+- `APP_RUNNER_SERVICE_ARN_STAGING`
+- `APP_BASE_URL_STAGING`
 
 For **production** environment:
-- `GCP_SA_KEY`
-- `GCP_REGION`
-- `CLOUDRUN_SERVICE_PRODUCTION`
+- `AWS_ROLE_TO_ASSUME`
+- `AWS_REGION`
+- `ECR_REPOSITORY`
+- `APP_RUNNER_SERVICE_ARN_PRODUCTION`
+- `APP_BASE_URL_PRODUCTION`
 
-Deploy target is Google Cloud Run via `google-github-actions/deploy-cloudrun`. Use GitHub Environment protection rules on `production` for manual approval gates.
+Deploy target is AWS App Runner, with images built/pushed to Amazon ECR. Use GitHub Environment protection rules on `production` for manual approval gates.
 
 
 
@@ -138,7 +142,7 @@ Use `docs/operations/staging-production-rollout.md` for the full staging→produ
 
 Helper scripts:
 
-- `./scripts/configure_github_env_secrets.sh <owner/repo>`: sets required `staging`/`production` environment secrets via GitHub CLI (`gh`).
+- `./scripts/configure_github_env_secrets.sh <owner/repo>`: sets required AWS `staging`/`production` environment secrets via GitHub CLI (`gh`).
 - `INGEST_API_KEY=... ./scripts/validate_staging.sh <staging-url>`: runs `/healthz` + `/readyz` probes and scoped ingest checks (`project_id=team-a/team-b`) before production approval.
 
 ## Scanner connector pack
