@@ -27,10 +27,11 @@ Defaults can be changed with env vars: `VIEWER_ROLE`, `INGESTOR_ROLE`, `ADMIN_RO
 
 - `GET /` dashboard UI (viewer)
 - `GET /api/me` identity + roles (viewer)
-- `GET /api/findings?limit=100&offset=0` (viewer)
+- `GET /api/findings?project_id=default&limit=100&offset=0` (viewer)
 - `POST /api/ingest/{scanner}` (ingestor or API key; scanner-aware connectors)
 - `POST /api/mcp/ingest` (ingestor or API key)
-- `GET /api/ai/insights` (viewer)
+- `GET /api/ai/insights?project_id=default` (viewer)
+- `GET /api/projects` (viewer)
 - `DELETE /api/admin/findings` (admin)
 - `GET /auth/login` (OIDC login start)
 - `GET /auth/callback` (OIDC callback)
@@ -138,3 +139,12 @@ The ingestion route now includes scanner-aware normalization for:
 - SARIF (`runs`) for tools like CodeQL/Semgrep SARIF
 
 For unknown formats, the service falls back to generic JSON mapping (`findings`/list/results).
+
+
+## Multi-project scoping
+
+Findings are now isolated by `project_id` so multiple teams/environments can share one deployment safely.
+
+- ingest accepts `project_id` query param (e.g. `/api/ingest/semgrep?project_id=team-a`)
+- findings and AI insights are project-filtered by default (`project_id=default`)
+- project inventory endpoint (`/api/projects`) returns known projects and finding counts

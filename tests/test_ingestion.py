@@ -223,3 +223,36 @@ def test_scanner_connector_pack_parsing(tmp_path: Path):
     assert findings["summary"]["by_scanner"]["checkov"] == 1
     assert findings["summary"]["by_scanner"]["zap"] == 1
     assert findings["summary"]["by_scanner"]["nuclei"] == 1
+
+
+
+def test_project_scoped_findings_and_summary(tmp_path: Path):
+    _, client = load_app(tmp_path / "projects.db")
+
+    team_a = [{"severity": "high", "title": "A secret", "file": "a.py", "line": 1}]
+    team_b = [{"severity": "low", "title": "B secret", "file": "b.py", "line": 2}]
+
+    ra = client.post(
+        "/api/ingest/gitleaks?project_id=team-a",
+        files={"file": ("a.json", json.dumps(team_a), "application/json")},
+        headers={"x-api-key": "test-key"},
+    )
+    rb = client.post(
+        "/api/ingest/gitleaks?project_id=team-b",
+        files={"file": ("b.json", json.dumps(team_b), "application/json")},
+        headers={"x-api-key": "test-key"},
+    )
+    assert ra.status_code == 200
+    assert rb.status_code == 200
+
+    fa = client.get("/api/findings?project_id=team-a&limit=10").json()
+    fb = client.get("/api/findings?project_id=team-b&limit=10").json()
+
+    assert fa["summary"]["total"] == 1
+    assert fb["summary"]["total"] == 1
+    assert fa["findings"][0]["project_id"] == "team-a"
+    assert fb["findings"][0]["project_id"] == "team-b"
+
+    projects = client.get("/api/projects").json()["projects"]
+    project_ids = {p["project_id"] for p in projects}
+    assert {"team-a", "team-b"}.issubset(project_ids)

@@ -65,6 +65,7 @@ class FindingRecord(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     fingerprint: Mapped[str] = mapped_column(String, unique=True, index=True)
     scanner: Mapped[str] = mapped_column(String, index=True)
+    project_id: Mapped[str] = mapped_column(String, default="default", index=True)
     category: Mapped[str] = mapped_column(String, default="security")
     severity: Mapped[str] = mapped_column(String, default="medium", index=True)
     rule_id: Mapped[str] = mapped_column(String, default="unknown")
@@ -85,6 +86,7 @@ Base.metadata.create_all(bind=engine)
 class Finding(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     scanner: str
+    project_id: str = "default"
     category: str = "security"
     severity: str = "medium"
     rule_id: str = "unknown"
@@ -324,7 +326,7 @@ def require_ingestor_access(request: Request, x_api_key: str | None = Header(def
 
 
 def fingerprint_finding(finding: Finding) -> str:
-    payload = f"{finding.scanner}|{finding.rule_id}|{finding.file_path}|{finding.line}|{finding.title}"
+    payload = f"{finding.project_id}|{finding.scanner}|{finding.rule_id}|{finding.file_path}|{finding.line}|{finding.title}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -332,6 +334,7 @@ def record_to_schema(record: FindingRecord) -> Finding:
     return Finding(
         id=record.id,
         scanner=record.scanner,
+        project_id=record.project_id,
         category=record.category,
         severity=record.severity,
         rule_id=record.rule_id,
@@ -347,7 +350,7 @@ def record_to_schema(record: FindingRecord) -> Finding:
     )
 
 
-def parse_sarif_report(report: dict[str, Any], scanner: str) -> list[Finding]:
+def parse_sarif_report(report: dict[str, Any], scanner: str, project_id: str = "default") -> list[Finding]:
     findings: list[Finding] = []
     for run in report.get("runs", []):
         rules = {rule.get("id"): rule for rule in run.get("tool", {}).get("driver", {}).get("rules", []) if rule.get("id")}
@@ -359,6 +362,7 @@ def parse_sarif_report(report: dict[str, Any], scanner: str) -> list[Finding]:
             findings.append(
                 Finding(
                     scanner=scanner,
+                    project_id=project_id,
                     severity=(result.get("level") or "warning").lower(),
                     rule_id=rule_id,
                     title=(rule.get("name") or rule_id),
@@ -376,10 +380,11 @@ def parse_sarif_report(report: dict[str, Any], scanner: str) -> list[Finding]:
     return findings
 
 
-def parse_generic_findings(report: list[dict[str, Any]], scanner: str, source: str = "ci") -> list[Finding]:
+def parse_generic_findings(report: list[dict[str, Any]], scanner: str, source: str = "ci", project_id: str = "default") -> list[Finding]:
     return [
         Finding(
             scanner=scanner,
+            project_id=item.get("project_id", project_id),
             category=item.get("category", "security"),
             severity=str(item.get("severity", "medium")).lower(),
             rule_id=item.get("rule_id", item.get("id", "unknown")),
@@ -398,7 +403,7 @@ def parse_generic_findings(report: list[dict[str, Any]], scanner: str, source: s
 
 
 
-def parse_semgrep_json(report: dict[str, Any], scanner: str = "semgrep") -> list[Finding]:
+def parse_semgrep_json(report: dict[str, Any], scanner: str = "semgrep", project_id: str = "default") -> list[Finding]:
     findings: list[Finding] = []
     for result in report.get("results", []):
         extra = result.get("extra", {})
@@ -418,7 +423,7 @@ def parse_semgrep_json(report: dict[str, Any], scanner: str = "semgrep") -> list
     return findings
 
 
-def parse_trivy_json(report: dict[str, Any], scanner: str = "trivy") -> list[Finding]:
+def parse_trivy_json(report: dict[str, Any], scanner: str = "trivy", project_id: str = "default") -> list[Finding]:
     findings: list[Finding] = []
     for result in report.get("Results", []):
         target = result.get("Target", "")
@@ -427,6 +432,7 @@ def parse_trivy_json(report: dict[str, Any], scanner: str = "trivy") -> list[Fin
             findings.append(
                 Finding(
                     scanner=scanner,
+                    project_id=project_id,
                     severity=str(vuln.get("Severity", vuln.get("severity", "medium"))).lower(),
                     rule_id=vuln.get("VulnerabilityID", vuln.get("ID", "unknown")),
                     title=vuln.get("Title", vuln.get("Message", "Trivy finding")),
@@ -439,13 +445,14 @@ def parse_trivy_json(report: dict[str, Any], scanner: str = "trivy") -> list[Fin
     return findings
 
 
-def parse_checkov_json(report: dict[str, Any], scanner: str = "checkov") -> list[Finding]:
+def parse_checkov_json(report: dict[str, Any], scanner: str = "checkov", project_id: str = "default") -> list[Finding]:
     failed = ((report.get("results") or {}).get("failed_checks")) or report.get("failed_checks") or []
     findings: list[Finding] = []
     for check in failed:
         findings.append(
             Finding(
                 scanner=scanner,
+                project_id=project_id,
                 severity=str(check.get("severity", "medium")).lower(),
                 rule_id=check.get("check_id", "unknown"),
                 title=check.get("check_name", "Checkov finding"),
@@ -459,13 +466,14 @@ def parse_checkov_json(report: dict[str, Any], scanner: str = "checkov") -> list
     return findings
 
 
-def parse_zap_json(report: dict[str, Any], scanner: str = "zap") -> list[Finding]:
+def parse_zap_json(report: dict[str, Any], scanner: str = "zap", project_id: str = "default") -> list[Finding]:
     findings: list[Finding] = []
     for site in (report.get("site") or []):
         for alert in site.get("alerts", []):
             findings.append(
                 Finding(
                     scanner=scanner,
+                    project_id=project_id,
                     severity=str(alert.get("riskdesc", "medium")).split(" ")[0].lower(),
                     rule_id=alert.get("pluginid", "unknown"),
                     title=alert.get("name", "ZAP alert"),
@@ -478,13 +486,14 @@ def parse_zap_json(report: dict[str, Any], scanner: str = "zap") -> list[Finding
     return findings
 
 
-def parse_nuclei_json(report: list[dict[str, Any]], scanner: str = "nuclei") -> list[Finding]:
+def parse_nuclei_json(report: list[dict[str, Any]], scanner: str = "nuclei", project_id: str = "default") -> list[Finding]:
     findings: list[Finding] = []
     for item in report:
         info = item.get("info", {})
         findings.append(
             Finding(
                 scanner=scanner,
+                project_id=project_id,
                 severity=str(info.get("severity", "medium")).lower(),
                 rule_id=item.get("template-id", "unknown"),
                 title=info.get("name", "Nuclei finding"),
@@ -497,30 +506,33 @@ def parse_nuclei_json(report: list[dict[str, Any]], scanner: str = "nuclei") -> 
     return findings
 
 
-def detect_and_parse_report(report: Any, scanner: str) -> list[Finding]:
+def detect_and_parse_report(report: Any, scanner: str, project_id: str = "default") -> list[Finding]:
     normalized = scanner.lower()
     if isinstance(report, dict) and "runs" in report:
-        return parse_sarif_report(report, normalized)
+        return parse_sarif_report(report, normalized, project_id=project_id)
     if normalized == "semgrep" and isinstance(report, dict) and isinstance(report.get("results"), list):
-        return parse_semgrep_json(report, normalized)
+        return parse_semgrep_json(report, normalized, project_id=project_id)
     if normalized == "trivy" and isinstance(report, dict) and isinstance(report.get("Results"), list):
-        return parse_trivy_json(report, normalized)
+        return parse_trivy_json(report, normalized, project_id=project_id)
     if normalized == "checkov" and isinstance(report, dict) and ((report.get("results") or {}).get("failed_checks") or report.get("failed_checks")):
-        return parse_checkov_json(report, normalized)
+        return parse_checkov_json(report, normalized, project_id=project_id)
     if normalized == "zap" and isinstance(report, dict) and isinstance(report.get("site"), list):
-        return parse_zap_json(report, normalized)
+        return parse_zap_json(report, normalized, project_id=project_id)
     if normalized == "nuclei" and isinstance(report, list) and report and isinstance(report[0], dict) and "template-id" in report[0]:
-        return parse_nuclei_json(report, normalized)
+        return parse_nuclei_json(report, normalized, project_id=project_id)
     if isinstance(report, list):
-        return parse_generic_findings(report, normalized)
+        return parse_generic_findings(report, normalized, project_id=project_id)
     if isinstance(report, dict) and isinstance(report.get("findings"), list):
-        return parse_generic_findings(report["findings"], normalized)
+        return parse_generic_findings(report["findings"], normalized, project_id=project_id)
     if isinstance(report, dict) and isinstance(report.get("results"), list):
-        return parse_generic_findings(report["results"], normalized)
+        return parse_generic_findings(report["results"], normalized, project_id=project_id)
     raise HTTPException(status_code=400, detail="Unsupported report format")
 
-def summary_from_db(db: Session) -> dict[str, Any]:
-    rows = db.execute(select(FindingRecord.severity, FindingRecord.scanner)).all()
+def summary_from_db(db: Session, project_id: str | None = None) -> dict[str, Any]:
+    query = select(FindingRecord.severity, FindingRecord.scanner)
+    if project_id:
+        query = query.where(FindingRecord.project_id == project_id)
+    rows = db.execute(query).all()
     by_severity: dict[str, int] = {}
     by_scanner: dict[str, int] = {}
     for severity, scanner in rows:
@@ -545,6 +557,7 @@ async def ingest_findings(db: Session, findings: list[Finding]) -> int:
                 FindingRecord(
                     fingerprint=fp,
                     scanner=finding.scanner,
+                    project_id=finding.project_id,
                     category=finding.category,
                     severity=finding.severity,
                     rule_id=finding.rule_id,
@@ -673,11 +686,18 @@ def readyz(db: Session = Depends(get_db)) -> dict[str, str]:
 def list_findings(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    project_id: str = Query(default="default"),
     _: AuthContext = Depends(require_role(VIEWER_ROLE)),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    records = db.scalars(select(FindingRecord).order_by(FindingRecord.detected_at.desc()).offset(offset).limit(limit)).all()
-    summary = summary_from_db(db)
+    records = db.scalars(
+        select(FindingRecord)
+        .where(FindingRecord.project_id == project_id)
+        .order_by(FindingRecord.detected_at.desc())
+        .offset(offset)
+        .limit(limit)
+    ).all()
+    summary = summary_from_db(db, project_id=project_id)
     return {"summary": summary, "findings": [record_to_schema(r).model_dump(mode="json") for r in records], "limit": limit, "offset": offset}
 
 
@@ -686,14 +706,15 @@ async def ingest_report(
     request: Request,
     scanner: str,
     file: UploadFile = File(...),
+    project_id: str = Query(default="default"),
     auth: AuthContext = Depends(require_ingestor_access),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     report = json.loads(await file.read())
-    findings = detect_and_parse_report(report, scanner)
+    findings = detect_and_parse_report(report, scanner, project_id=project_id)
     ingested = await ingest_findings(db, findings)
     audit("ingest_report", request, scanner=scanner, ingested=ingested, actor=auth.subject)
-    return {"scanner": scanner, "ingested": ingested, "summary": summary_from_db(db)}
+    return {"scanner": scanner, "project_id": project_id, "ingested": ingested, "summary": summary_from_db(db, project_id=project_id)}
 
 
 @app.post("/api/mcp/ingest")
@@ -703,7 +724,7 @@ async def ingest_from_mcp(
     auth: AuthContext = Depends(require_ingestor_access),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    findings = parse_generic_findings(payload.findings, scanner=payload.scanner, source=payload.source)
+    findings = parse_generic_findings(payload.findings, scanner=payload.scanner, source=payload.source, project_id="default")
     ingested = await ingest_findings(db, findings)
     audit("ingest_mcp", request, scanner=payload.scanner, ingested=ingested, actor=auth.subject)
     return {"scanner": payload.scanner, "source": payload.source, "ingested": ingested, "summary": summary_from_db(db)}
@@ -711,13 +732,28 @@ async def ingest_from_mcp(
 
 @app.get("/api/ai/insights")
 async def ai_insights(
+    project_id: str = Query(default="default"),
     _: AuthContext = Depends(require_role(VIEWER_ROLE)),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    records = db.scalars(select(FindingRecord).order_by(FindingRecord.detected_at.desc()).limit(1000)).all()
+    records = db.scalars(
+        select(FindingRecord)
+        .where(FindingRecord.project_id == project_id)
+        .order_by(FindingRecord.detected_at.desc())
+        .limit(1000)
+    ).all()
     findings = [record_to_schema(r) for r in records]
-    summary = summary_from_db(db)
+    summary = summary_from_db(db, project_id=project_id)
     return await build_openai_ai_insights(findings, summary)
+
+
+@app.get("/api/projects")
+def list_projects(
+    _: AuthContext = Depends(require_role(VIEWER_ROLE)),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    rows = db.execute(select(FindingRecord.project_id, func.count(FindingRecord.id)).group_by(FindingRecord.project_id)).all()
+    return {"projects": [{"project_id": project_id, "findings": count} for project_id, count in rows]}
 
 
 @app.get("/api/admin/chaos")
