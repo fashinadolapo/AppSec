@@ -1,0 +1,92 @@
+version: "3.9"
+
+services:
+  # Backend API
+  api:
+    build: ./apps/api
+    container_name: dolansecops-api
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/dolansecops
+      - REDIS_URL=redis://redis:6379/0
+      - OPENAI_KEY=${OPENAI_KEY}
+    depends_on:
+      - db
+      - redis
+      - ai_engine
+
+  # AI Engine
+  ai_engine:
+    build: ./apps/ai_engine
+    container_name: dolansecops-ai
+    environment:
+      - OPENAI_KEY=${OPENAI_KEY}
+    depends_on:
+      - redis
+
+  # Graph Engine
+  graph_engine:
+    build: ./apps/graph_engine
+    container_name: dolansecops-graph
+    depends_on:
+      - api
+      - ai_engine
+
+  # Frontend Dashboard
+  frontend:
+    build: ./apps/frontend
+    container_name: dolansecops-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+      - graph_engine
+
+  # Runtime Agent
+  runtime_agent:
+    build: ./apps/runtime_agent
+    container_name: dolansecops-agent
+    environment:
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
+      - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID}
+      - GCP_CREDENTIALS_JSON=${GCP_CREDENTIALS_JSON}
+    depends_on:
+      - api
+      - ai_engine
+
+  # PostgreSQL
+  db:
+    image: postgres:15
+    container_name: dolansecops-db
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=dolansecops
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+  # Redis for Celery
+  redis:
+    image: redis:7
+    container_name: dolansecops-redis
+    ports:
+      - "6379:6379"
+
+  # Celery worker
+  celery:
+    build: ./apps/api
+    container_name: dolansecops-celery
+    command: celery -A main.celery_app worker --loglevel=info
+    depends_on:
+      - api
+      - redis
+      - ai_engine
+
+volumes:
+  db_data:
