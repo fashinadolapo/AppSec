@@ -3,26 +3,7 @@ import importlib
 import pytest
 from fastapi import HTTPException
 
-try:
-    import app.main as main
-except Exception as exc:  # pragma: no cover - environment mismatch guard
-    pytest.skip(f"Unable to import app.main: {exc}", allow_module_level=True)
-
-REQUIRED_SYMBOLS = [
-    "AUTH_MODE",
-    "ROLE_CLAIM",
-    "detect_and_parse_report",
-    "fingerprint_finding",
-    "_auth_context_from_claims",
-    "_auth_from_ws",
-]
-
-missing = [name for name in REQUIRED_SYMBOLS if not hasattr(main, name)]
-if missing:
-    pytest.skip(
-        "Unit core tests require the production app.main surface. Missing symbols: " + ", ".join(missing),
-        allow_module_level=True,
-    )
+import app.main as main
 
 
 @pytest.fixture(autouse=True)

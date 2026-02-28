@@ -5,27 +5,7 @@ import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
 
-try:
-    import app.main as main
-except Exception as exc:  # pragma: no cover - environment mismatch guard
-    pytest.skip(f"Unable to import app.main: {exc}", allow_module_level=True)
-
-REQUIRED_SYMBOLS = [
-    "AUTH_MODE",
-    "INGEST_API_KEY",
-    "SessionLocal",
-    "SecurityHeadersMiddleware",
-    "IngestProtectionMiddleware",
-    "detect_and_parse_report",
-    "build_openai_ai_insights",
-]
-
-missing = [name for name in REQUIRED_SYMBOLS if not hasattr(main, name)]
-if missing:
-    pytest.skip(
-        "Unit additional tests require the production app.main surface. Missing symbols: " + ", ".join(missing),
-        allow_module_level=True,
-    )
+import app.main as main
 
 
 @pytest.fixture(autouse=True)
