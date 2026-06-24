@@ -97,3 +97,7 @@ Recommended first pass:
 4. record baseline error rate and MTTR
 
 Capture results in your incident/testing log for trend tracking.
+
+## 8) Amplify and existing S3 bucket guidance
+
+If Amplify is used for static hosting or build artifacts, prefer the already governed environment S3 bucket instead of creating a new Amplify-managed bucket. See [Amplify Existing S3 Bucket and Deployment Optimization Notes](./amplify-existing-s3-optimization.md) for the decision criteria and optimization checklist.
